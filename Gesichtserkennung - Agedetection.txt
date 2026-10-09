@@ -1,0 +1,118 @@
+USER MANUAL - ERP Lab Kiosk (smile + age detection)
+===================================================
+
+1. ONE-TIME SETUP (new)
+-----------------------
+The improved version needs one extra package (MediaPipe).
+
+  a) Open a terminal in Visual Studio Code (the same Python that you use to
+     run the file, e.g. Anaconda) and go to the project folder:
+         cd C:\Users\erplabor\Desktop\AgeDetection
+  b) Install the packages:
+         pip install -r requirements.txt
+  c) Copy the new files into the project folder (replace the old
+     Kiosk_ERP_Code.py). The folder must contain:
+         Kiosk_ERP_Code.py
+         age_deploy.prototxt
+         age_net.caffemodel
+  d) Start the program once WITH internet. It downloads a small file
+     (face_landmarker.task, ~3.7 MB) next to the script. After that the kiosk
+     works offline. All camera images are processed on this PC only and are
+     never saved or sent anywhere.
+
+     If the kiosk PC has no internet: download this file on another PC,
+     and save it in the project folder as "face_landmarker.task":
+     https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+
+  Tested with: Python 3.12, OpenCV 4.13, MediaPipe 0.10.33.
+  MediaPipe may not support the very newest Python versions yet. If
+  "pip install mediapipe" fails, use Python 3.9 - 3.12.
+
+2. START THE KIOSK
+------------------
+    Open Visual Studio Code.
+    Navigate to the file directory:
+    C:\Users\erplabor\Desktop\AgeDetection
+
+    Open the file named Kiosk_ERP_Code.py.
+    Select "Run Python File".
+    The camera loads automatically. The console should print:
+        Face/smile detector: MediaPipe
+    (If it prints "Haar (fallback)" and a big WARNING, MediaPipe or its model
+    file is missing - see section 1. The kiosk still runs, but with the old,
+    less accurate detectors.)
+
+3. HOW A CUSTOMER USES IT
+-------------------------
+    Stand inside the RED box, face the camera, and smile.
+    The text below the red box tells you what to do:
+
+      "Stand inside the RED box and smile" ... no face visible
+      "Please step into the RED box" ......... a face is visible but outside the box
+      "One person at a time, please" ......... two people of similar size are in the box
+      "Come a little closer" ................. face too small / too far away
+      "Too dark - please step into the light"  face too dark to judge the age
+      "Analysing... please hold still" ....... age is being estimated (about 1-2 seconds)
+      "Smile to confirm your order" .......... age is known, waiting for a smile
+      "Smile to order (remove mask/sunglasses)"  no smile seen for 6 seconds
+      "Great! Hold your smile..." ............ smile detected, order is about to be sent
+      "Next order possible in Ns" ............ cooldown after an order (30 s)
+
+    When you smile:
+        If detected as an adult, the system places an order for Hugo Cocktail.
+        If detected as a minor, the system places an order for Lemonade.
+        If the age model stays unsure for 8 seconds, the SAFE choice is used
+        (Lemonade). The age label then shows a "?".
+
+    In Node-RED (http://localhost:1880/#flow/8926277d0724f504), the output
+    appears as JSON, for example:
+        {"name":"adult | Hugo Cocktail"}
+
+    Keys:   q = quit the program       r = reset the current customer
+
+4. WHAT IS NEW IN THIS VERSION
+------------------------------
+    - Smile detection now uses MediaPipe expression scores instead of the
+      Haar smile cascade (clear smiles are no longer missed).
+    - Face detection now uses MediaPipe. Faces with glasses, masks, low light
+      or slight head turns are still found.
+    - Only faces whose centre is INSIDE the red box are used. A person
+      standing outside the box is ignored (they are drawn with a thin grey
+      frame). Two similar-sized people inside the box pause the kiosk.
+    - Age: several crops (plus mirrored crops) per frame, averaged over the
+      last 8 predictions. The decision uses the probability of "adult"
+      (>= 0.60 adult, <= 0.40 child) instead of 4 identical age buckets.
+    - If an order cannot be sent to Node-RED, the kiosk now allows an
+      immediate retry (before, it waited 30 seconds).
+    - The age label now shows the class too, e.g. "Age: (25-32) (adult)".
+    - Debug values are shown at the top left of the window.
+
+5. SETTINGS YOU MAY WANT TO ADJUST
+----------------------------------
+    All at the top of Kiosk_ERP_Code.py:
+
+    SMILE_THRESHOLD = 0.40          higher = stricter smile, lower = easier
+    SMILING_FRAMES_REQUIRED = 5     how long the smile must be held
+    MIN_FACE_AREA_FRAC = 0.090      how close the person has to stand
+    ADULT_PROB_MIN = 0.60           how sure the model must be to say "adult"
+                                    (raise it to be stricter with adults)
+    CHILD_PROB_MAX = 0.40           how sure the model must be to say "child"
+    UNCERTAIN_TIMEOUT_SEC = 8       time until the safe choice (Lemonade) is used
+                                    (0 = keep analysing forever)
+    MIN_FACE_BRIGHTNESS = 30        "too dark" limit (0-255)
+    BLOCK_MULTIPLE_PEOPLE = True    pause if 2 people stand in the box
+    AGE_INFER_EVERY_N_FRAMES = 3    raise to 4-6 if the video is choppy on a slow PC
+
+6. KNOWN LIMITATIONS
+--------------------
+    - The age model is an estimate, NOT a legal age check. It is a demo
+      model with coarse age groups (the group 15-20 contains people who are
+      18+). Glasses, hair, beards, lighting and head pose can still shift the
+      result. Glasses are handled better than before, but not perfectly.
+    - Face masks: the face is now found, but the age model cannot judge a
+      face with a mask and a smile cannot be seen. The customer has to
+      remove the mask (the kiosk shows a hint after 6 seconds).
+    - Very dark or strongly backlit faces: the kiosk asks for more light.
+      Place the camera so that the face is lit from the front.
+
+Screenshots attached for your reference.

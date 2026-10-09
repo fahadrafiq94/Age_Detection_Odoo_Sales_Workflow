@@ -1,0 +1,400 @@
+import cv2
+import time
+import numpy as np
+import requests
+from collections import Counter, deque
+import os
+
+# -----------------------------
+# Configuration (edit as needed)
+# -----------------------------
+# Robust file loading: always loads from the folder where this script resides
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+AGE_PROTO = os.path.join(SCRIPT_DIR, "age_deploy.prototxt")
+AGE_MODEL = os.path.join(SCRIPT_DIR, "age_net.caffemodel")
+
+SMILING_FRAMES_REQUIRED = 3        # consecutive frames required to trigger
+AGE_STABLE_FRAMES = 6              # frames to sample age to get stable value
+AGE_STABLE_MIN_VOTES = 4           # minimum votes for mode to be considered stable
+TRIGGER_COOLDOWN_SEC = 30          # once triggered, wait this many seconds before next trigger
+RESET_TIMEOUT_SEC = 8              # no-face timeout to reset suggestion on screen
+MIN_FACE_AREA_FRAC = 0.03          # minimum face area fraction of frame to be considered (0.03 = 3%)
+MIN_ROI_PIX = 40                   # minimum width/height in pixels for a valid face ROI
+
+ERP_API_POST_URL = "http://localhost:1880/wserpbar"
+# ".erp-web.org/add.php"
+ERP_API_HEADERS = {"Content-Type": "application/json"}
+
+# -----------------------------
+# Load models
+# -----------------------------
+try:
+    age_net = cv2.dnn.readNetFromCaffe(AGE_PROTO, AGE_MODEL)
+    print("Age model loaded.")
+except Exception as e:
+    print("Error loading age model:", e)
+    raise SystemExit("Missing age model files - make sure age_deploy.prototxt and age_net.caffemodel are present.")
+
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_smile.xml')
+if face_cascade.empty() or smile_cascade.empty():
+    raise SystemExit("Error loading Haar cascades. Check OpenCV data files.")
+
+AGE_BUCKETS = ['(0-2)', '(4-6)', '(8-12)', '(15-20)',
+               '(25-32)', '(38-43)', '(48-53)', '(60-100)']
+
+# -----------------------------
+# Menu (German beers + lemonade)
+# -----------------------------
+menu = {
+    "drinks": {
+        "non_alcoholic": [
+            "Lemonade", "Strawberry Lemonade", "Orange Juice", "Iced Tea",
+            "Milkshake", "Iced Coffee", "Sparkling Water", "Mango Cooler"
+        ],
+        "alcoholic": [
+            "Paulaner Weißbier", "Krombacher Pils", "Beck's (Pilsner)", "Warsteiner Premium",
+            "Mojito", "Whiskey Sour", "Red Wine"
+        ]
+    },
+    "food": [
+        "French Fries", "Cheese Pizza", "Mini Burger", "Veggie Sandwich",
+        "Grilled Chicken Salad", "Pasta Carbonara", "Club Sandwich",
+        "Bratwurst with Sauerkraut"
+    ]
+}
+
+# -----------------------------
+# Helper functions
+# -----------------------------
+def estimate_age(face_img):
+    """Return age bucket predicted by the Caffe model for a face ROI and confidence."""
+    try:
+        blob = cv2.dnn.blobFromImage(face_img, 1.0, (227, 227),
+                                     (78.4263377603, 87.7689143744, 114.895847746),
+                                     swapRB=False)
+        age_net.setInput(blob)
+        preds = age_net.forward()
+        idx = int(preds[0].argmax())
+        conf = float(preds[0][idx])
+        return AGE_BUCKETS[idx], conf
+    except Exception:
+        return "Unknown", 0.0
+
+def classify_age_bucket(age_bucket):
+    """Map an age bucket to 'child' or 'adult' (adjust cutoff if needed)."""
+    minor_buckets = ['(0-2)', '(4-6)', '(8-12)', '(15-20)']
+    adult_buckets = ['(25-32)', '(38-43)', '(48-53)', '(60-100)']
+    if age_bucket in minor_buckets:
+        return 'child'
+    if age_bucket in adult_buckets:
+        return 'adult'
+    return 'unknown'
+
+def stable_age_from_samples(samples):
+    """Return (stable_bucket or 'Unknown', vote_count)."""
+    if not samples:
+        return "Unknown", 0
+    counter = Counter(samples)
+    mode, votes = counter.most_common(1)[0]
+    return mode, votes
+
+def deterministic_choice_by_index(list_obj, index):
+    if not list_obj:
+        return None
+    return list_obj[index % len(list_obj)]
+
+def build_order_name(age_class, drink, food):
+    return f"{age_class} | {drink} + {food}"
+
+def send_order_to_erp(drink, food, age_class):
+    """Send a JSON POST to the ERP endpoint. Returns True on success, False on failure."""
+    payload = {"name": build_order_name(age_class, drink, food)}
+    try:
+        print("Order initiated for ERP submission...")
+        r = requests.post(ERP_API_POST_URL, json=payload, headers=ERP_API_HEADERS, timeout=5)
+        if r.status_code == 200:
+            print("ERP API response:", r.text)
+            return True
+        else:
+            print("ERP POST failed. Status:", r.status_code, "Body:", r.text)
+            return False
+    except requests.RequestException as e:
+        print("ERP POST exception:", e)
+        return False
+
+# -----------------------------
+# Main kiosk app
+# -----------------------------
+def run_kiosk():
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Cannot open camera.")
+        return
+
+    cv2.namedWindow("ERP Lab Kiosk", cv2.WINDOW_NORMAL)
+
+    last_trigger_time = 0
+    suggestion_data = None
+    age_samples = deque(maxlen=AGE_STABLE_FRAMES)   # store age buckets
+    smile_counter = 0
+    last_face_time = time.time()
+    deterministic_index = 0
+    age_locked = False
+    locked_age_bucket = "Unknown"
+
+    print("Starting ERP Lab Kiosk (press 'q' to quit, 'r' to reset).")
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("Camera frame not available.")
+                break
+
+            frame = cv2.flip(frame, 1)
+            frame_h, frame_w = frame.shape[:2]
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            # Red guide box coordinates (centered)
+            box_w = int(frame_w * 0.5)
+            box_h = int(frame_h * 0.6)
+            box_x1 = (frame_w - box_w) // 2
+            box_y1 = (frame_h - box_h) // 2
+            box_x2 = box_x1 + box_w
+            box_y2 = box_y1 + box_h
+
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5)
+
+            if len(faces) == 0:
+                # No face detected
+                if suggestion_data and (time.time() - last_face_time) > RESET_TIMEOUT_SEC:
+                    suggestion_data = None
+                    print("Reset: no face detected for timeout.")
+                age_samples.clear()
+                smile_counter = 0
+                age_locked = False
+                locked_age_bucket = "Unknown"
+
+                cv2.rectangle(frame, (box_x1, box_y1), (box_x2, box_y2), (0, 0, 255), 2)
+                cv2.putText(frame, "Stand inside the RED box and smile", (30, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                cv2.putText(frame, "No face detected", (50, frame_h - 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+                cv2.imshow("ERP Lab Kiosk", frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    break
+                if key == ord('r'):
+                    suggestion_data = None
+                    age_samples.clear()
+                    smile_counter = 0
+                    age_locked = False
+                    locked_age_bucket = "Unknown"
+                    print("Manual reset.")
+                continue
+
+            # There is at least one face - use largest
+            last_face_time = time.time()
+            x, y, w, h = max(faces, key=lambda r: r[2] * r[3])
+
+            x = max(0, x)
+            y = max(0, y)
+            w = max(0, w)
+            h = max(0, h)
+            if x + w > frame_w:
+                w = frame_w - x
+            if y + h > frame_h:
+                h = frame_h - y
+
+            if w < MIN_ROI_PIX or h < MIN_ROI_PIX:
+                face_area = 0
+            else:
+                face_area = w * h
+
+            frame_area = frame_w * frame_h
+            face_frac = face_area / float(frame_area) if frame_area > 0 else 0.0
+
+            cv2.rectangle(frame, (box_x1, box_y1), (box_x2, box_y2), (0, 0, 255), 2)
+
+            face_center_x = x + w // 2
+            face_center_y = y + h // 2
+            in_box = (face_center_x >= box_x1 and face_center_x <= box_x2 and
+                      face_center_y >= box_y1 and face_center_y <= box_y2)
+            large_enough = face_frac >= MIN_FACE_AREA_FRAC and w >= MIN_ROI_PIX and h >= MIN_ROI_PIX
+
+            rect_color = (0, 255, 0) if (in_box and large_enough) else (0, 165, 255)
+            if w > 0 and h > 0:
+                cv2.rectangle(frame, (x, y), (x + w, y + h), rect_color, 2)
+
+            face_color = None
+            face_gray = None
+            if w > 0 and h > 0 and y + h <= frame_h and x + w <= frame_w:
+                face_color = frame[y:y+h, x:x+w].copy()
+                face_gray = gray[y:y+h, x:x+w].copy()
+
+            if large_enough and face_color is not None and face_color.size != 0:
+                try:
+                    resized = cv2.resize(face_color, (227, 227))
+                    age_bucket, age_conf = estimate_age(resized)
+                    age_samples.append(age_bucket)
+                except Exception as e:
+                    print("Age estimation error (skipping sample):", e)
+                    age_bucket, age_conf = "Unknown", 0.0
+            else:
+                age_bucket, age_conf = "Unknown", 0.0
+
+            stable_age, votes = stable_age_from_samples(list(age_samples))
+            if len(age_samples) >= AGE_STABLE_FRAMES and votes >= AGE_STABLE_MIN_VOTES:
+                age_locked = True
+                locked_age_bucket = stable_age
+            else:
+                age_locked = False
+                locked_age_bucket = stable_age if stable_age != "Unknown" else "Unknown"
+
+            smiling = False
+            if face_gray is not None and face_gray.size != 0 and large_enough:
+                try:
+                    smiles = smile_cascade.detectMultiScale(face_gray, scaleFactor=1.8, minNeighbors=20)
+                    smiling = len(smiles) > 0
+                except Exception as e:
+                    smiling = False
+
+            if smiling and in_box and large_enough and age_locked:
+                smile_counter += 1
+            else:
+                smile_counter = 0
+
+            if w > 0 and h > 0:
+                cv2.putText(frame, f"Age: {locked_age_bucket}", (x, y - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                cv2.putText(frame, "Smiling" if smiling else "Not Smiling", (x, y + h + 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 255), 2)
+
+            cv2.putText(frame, f"In box: {in_box}", (10, frame_h - 60),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            cv2.putText(frame, f"Face size: {face_frac:.3f}", (10, frame_h - 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            cv2.putText(frame, f"Age locked: {age_locked}", (10, frame_h - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+            trigger_allowed = (time.time() - last_trigger_time) > TRIGGER_COOLDOWN_SEC
+            if suggestion_data is None and smile_counter >= SMILING_FRAMES_REQUIRED and in_box and large_enough and age_locked and trigger_allowed:
+                age_class = classify_age_bucket(locked_age_bucket)
+                if age_class == 'adult':
+                    drink_list = menu["drinks"]["alcoholic"] + menu["drinks"]["non_alcoholic"]
+                elif age_class == 'child':
+                    drink_list = menu["drinks"]["non_alcoholic"]
+                else:
+                    drink_list = menu["drinks"]["non_alcoholic"]
+
+                drink_choice = deterministic_choice_by_index(drink_list, deterministic_index)
+                food_choice = deterministic_choice_by_index(menu["food"], deterministic_index)
+
+                suggestion_data = {
+                    "drink": drink_choice,
+                    "food": food_choice,
+                    "age_bucket": locked_age_bucket,
+                    "age_class": age_class,
+                    "timestamp": time.time()
+                }
+                last_trigger_time = time.time()
+                deterministic_index += 1
+                print("Suggestion locked:", suggestion_data)
+
+                success = send_order_to_erp(suggestion_data["drink"], suggestion_data["food"], suggestion_data["age_class"])
+                print("ERP send status:", success)
+
+                if success:
+                    # --- Beautified success message, now says "Suggested:" above drink/food ---
+                    start_confirm = time.time()
+                    while time.time() - start_confirm < 5:
+                        ret_c, frame_c = cap.read()
+                        if not ret_c:
+                            break
+                        frame_c = cv2.flip(frame_c, 1)
+                        fh, fw = frame_c.shape[:2]
+                        overlay = frame_c.copy()
+                        cv2.rectangle(overlay, (int(fw*0.05), int(fh*0.33)), (int(fw*0.95), int(fh*0.71)), (0, 0, 0), -1)
+                        alpha = 0.6
+                        frame_c = cv2.addWeighted(overlay, alpha, frame_c, 1 - alpha, 0)
+                        cv2.putText(frame_c, "ORDER SUCCESSFUL!", (int(fw*0.1), int(fh*0.45)),
+                                    cv2.FONT_HERSHEY_DUPLEX, 1.5, (0, 255, 0), 4)
+                        cv2.putText(frame_c, "Suggested:", (int(fw*0.1), int(fh*0.56)),
+                                    cv2.FONT_HERSHEY_DUPLEX, 1.0, (140, 200, 255), 2)
+                        cv2.putText(frame_c, f"Drink: {suggestion_data['drink']}", (int(fw*0.13), int(fh*0.62)),
+                                    cv2.FONT_HERSHEY_DUPLEX, 0.9, (255, 255, 255), 2)
+                        cv2.putText(frame_c, f"Food: {suggestion_data['food']}", (int(fw*0.13), int(fh*0.68)),
+                                    cv2.FONT_HERSHEY_DUPLEX, 0.9, (255, 255, 255), 2)
+                        cv2.putText(frame_c, "Next customer please...", (int(fw*0.1), int(fh*0.80)),
+                                    cv2.FONT_HERSHEY_DUPLEX, 0.9, (180, 255, 255), 2)
+                        cv2.imshow("ERP Lab Kiosk", frame_c)
+                        if cv2.waitKey(100) & 0xFF == ord('q'):
+                            cap.release()
+                            cv2.destroyAllWindows()
+                            return
+                    suggestion_data = None
+                    age_samples.clear()
+                    smile_counter = 0
+                    age_locked = False
+                    locked_age_bucket = "Unknown"
+                    print("Order completed. Ready for next customer.")
+                else:
+                    start_fail = time.time()
+                    while time.time() - start_fail < 3:
+                        ret_c, frame_c = cap.read()
+                        if not ret_c:
+                            break
+                        frame_c = cv2.flip(frame_c, 1)
+                        fh, fw = frame_c.shape[:2]
+                        cv2.putText(frame_c, "ORDER FAILED", (int(fw*0.08), int(fh*0.45)),
+                                    cv2.FONT_HERSHEY_DUPLEX, 1.2, (0, 0, 255), 4)
+                        cv2.putText(frame_c, "Please try again", (int(fw*0.12), int(fh*0.55)),
+                                    cv2.FONT_HERSHEY_DUPLEX, 0.9, (255, 255, 255), 2)
+                        cv2.imshow("ERP Lab Kiosk", frame_c)
+                        if cv2.waitKey(100) & 0xFF == ord('q'):
+                            cap.release()
+                            cv2.destroyAllWindows()
+                            return
+                    suggestion_data = None
+                    age_samples.clear()
+                    smile_counter = 0
+                    age_locked = False
+                    locked_age_bucket = "Unknown"
+                    print("Order failed. Ready for retry.")
+
+            if suggestion_data:
+                drink = suggestion_data["drink"]
+                food = suggestion_data["food"]
+                color = (0, 255, 0) if suggestion_data["age_class"] == 'adult' else (0, 165, 255)
+                cv2.putText(frame, f"Suggested: {drink} & {food}", (box_x1 + 10, box_y2 + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                elapsed = int(time.time() - suggestion_data["timestamp"])
+                cv2.putText(frame, f"Triggered {elapsed}s ago", (box_x1 + 10, box_y2 + 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1)
+            else:
+                cv2.putText(frame, "Stand inside the RED box and smile to confirm", (box_x1 + 10, box_y2 + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (200, 200, 200), 2)
+
+            cv2.imshow("ERP Lab Kiosk", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            if key == ord('r'):
+                suggestion_data = None
+                age_samples.clear()
+                smile_counter = 0
+                age_locked = False
+                locked_age_bucket = "Unknown"
+                print("Manual reset.")
+
+    except KeyboardInterrupt:
+        print("Interrupted by user.")
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+        print("Kiosk closed.")
+
+if __name__ == "__main__":
+    run_kiosk()
