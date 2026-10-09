@@ -28,7 +28,7 @@ Add 2-3 screenshots of the running kiosk here, e.g.:
 - [Privacy and responsible use](#privacy-and-responsible-use)
 - [Roadmap](#roadmap)
 - [Credits and third-party components](#credits-and-third-party-components)
-- [License](#license)
+
 
 ## Overview
 
@@ -345,6 +345,4 @@ Ideas for future improvements:
 - **Age model** - the pre-trained Caffe network and its eight age groups follow *G. Levi and T. Hassner, "Age and Gender Classification Using Convolutional Neural Networks", IEEE Workshop on Analysis and Modeling of Faces and Gestures (AMFG) at CVPR 2015* (trained on the Adience benchmark). Check the licence terms of the model files before any commercial use.
 - **[Node-RED](https://nodered.org/)** - receives the orders and connects to the ERP system.
 
-## License
 
-No license has been specified yet. Add a `LICENSE` file before publishing or sharing this repository, and respect the licences of the third-party components listed above.
