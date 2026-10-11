@@ -2,10 +2,10 @@
 
 > A camera kiosk that estimates a customer's age group, waits for a smile, and places a drink order in the ERP system - no touchscreen, no buttons.
 
-![Python 3.9+](docs/badges/python.svg)
-![OpenCV 4.x (not 5)](docs/badges/opencv.svg)
-![MediaPipe 0.10.9+](docs/badges/mediapipe.svg)
-![Node-RED ERP integration](docs/badges/nodered.svg)
+![Python](https://img.shields.io/badge/python-3.9--3.12-blue)
+![OpenCV](https://img.shields.io/badge/OpenCV-4.8%2B-green)
+![MediaPipe](https://img.shields.io/badge/MediaPipe-0.10.9%2B-orange)
+![Node-RED](https://img.shields.io/badge/Node--RED-ERP%20integration-red)
 
 <!--
 Add 2-3 screenshots of the running kiosk here, e.g.:
@@ -28,7 +28,7 @@ Add 2-3 screenshots of the running kiosk here, e.g.:
 - [Privacy and responsible use](#privacy-and-responsible-use)
 - [Roadmap](#roadmap)
 - [Credits and third-party components](#credits-and-third-party-components)
-- [License](#license)
+
 
 ## Overview
 
@@ -352,6 +352,3 @@ Ideas for future improvements:
 - **Age model** - the pre-trained Caffe network and its eight age groups follow *G. Levi and T. Hassner, "Age and Gender Classification Using Convolutional Neural Networks", IEEE Workshop on Analysis and Modeling of Faces and Gestures (AMFG) at CVPR 2015* (trained on the Adience benchmark). Check the licence terms of the model files before any commercial use.
 - **[Node-RED](https://nodered.org/)** - receives the orders and connects to the ERP system.
 
-## License
-
-No license has been specified yet. Add a `LICENSE` file before publishing or sharing this repository, and respect the licences of the third-party components listed above.
