@@ -2,10 +2,10 @@
 
 > A camera kiosk that estimates a customer's age group, waits for a smile, and places a drink order in the ERP system - no touchscreen, no buttons.
 
-![Python](https://img.shields.io/badge/python-3.9--3.12-blue)
-![OpenCV](https://img.shields.io/badge/OpenCV-4.8%2B-green)
-![MediaPipe](https://img.shields.io/badge/MediaPipe-0.10.9%2B-orange)
-![Node-RED](https://img.shields.io/badge/Node--RED-ERP%20integration-red)
+![Python 3.9+](docs/badges/python.svg)
+![OpenCV 4.x (not 5)](docs/badges/opencv.svg)
+![MediaPipe 0.10.9+](docs/badges/mediapipe.svg)
+![Node-RED ERP integration](docs/badges/nodered.svg)
 
 <!--
 Add 2-3 screenshots of the running kiosk here, e.g.:
@@ -28,7 +28,7 @@ Add 2-3 screenshots of the running kiosk here, e.g.:
 - [Privacy and responsible use](#privacy-and-responsible-use)
 - [Roadmap](#roadmap)
 - [Credits and third-party components](#credits-and-third-party-components)
-
+- [License](#license)
 
 ## Overview
 
@@ -87,12 +87,13 @@ flowchart LR
 
 | Requirement | Details |
 |-------------|---------|
-| Python | 3.9 - 3.12 (MediaPipe may not yet support the very newest Python versions) |
+| Python | 3.9 or newer (tested with 3.12) |
+| OpenCV | **4.8 - 4.x, not 5.x.** OpenCV 5 removed support for Caffe models, which the age model uses. `requirements.txt` pins this for you. |
 | Webcam | Any USB or built-in camera |
 | Internet | Only once, to download a 3.7 MB model file on first start |
 | Node-RED | Running on `localhost:1880` to receive orders (optional for trying out the camera part, see [below](#try-it-without-node-red)) |
 
-Tested with Python 3.12, OpenCV 4.13 and MediaPipe 0.10.33. Windows is the kiosk target platform; the core pipeline also runs on Linux.
+Tested with Python 3.12, OpenCV 4.14 and MediaPipe 1.1.0. Windows is the kiosk target platform; the core pipeline also runs on Linux.
 
 ### 1. Get the code
 
@@ -119,6 +120,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+> **Important - install only one OpenCV package, and keep it on 4.x.** Use a fresh virtual environment, or first remove any existing OpenCV packages with `pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python opencv-contrib-python-headless`. MediaPipe already depends on `opencv-contrib-python`, so do **not** install `opencv-python` as well. If the console later says `OpenCV 5.x`, see [Troubleshooting](#troubleshooting).
 
 > **Using Anaconda or Visual Studio Code?** Skip the virtual environment, select your Python interpreter in VS Code (`Ctrl+Shift+P` -> *Python: Select Interpreter*), and run `pip install -r requirements.txt` in that same interpreter's terminal.
 
@@ -289,6 +292,8 @@ AgeDetection/
 |-- face_landmarker.task       # MediaPipe model, downloaded automatically on first run
 |-- cam test.py                # quick camera check
 |-- import cv2.py              # FPS measurement helper
+|-- docs/
+|   `-- badges/                # local SVG badges used by this README (no internet needed)
 `-- README.md
 ```
 
@@ -300,8 +305,9 @@ Older prototypes (`ERP_kiosk_code.py`, `kiosk_code.py.txt`, the notebook) and th
 
 | Problem | Cause and fix |
 |---------|---------------|
-| Console prints `Haar (fallback)` and a WARNING | MediaPipe is not installed, does not support your Python version, or `face_landmarker.task` is missing. Run `pip install -r requirements.txt` (Python 3.9-3.12) and make sure the model file is next to the script. |
-| `pip install mediapipe` fails | Usually a Python version mismatch. Use Python 3.9-3.12. |
+| `module 'cv2.dnn' has no attribute 'readNetFromCaffe'` (the kiosk now prints *Your OpenCV (5.x) cannot load Caffe models*) | OpenCV 5 was installed - it removed Caffe support - or several OpenCV packages overwrite each other. Check with `python -c "import cv2; print(cv2.__version__, cv2.__file__)"`; the version must start with `4.`. Fix: `pip uninstall -y opencv-python opencv-python-headless opencv-contrib-python opencv-contrib-python-headless`, then `pip install -r requirements.txt`. A fresh virtual environment is the most reliable way. |
+| Console prints `Haar (fallback)` and a WARNING | MediaPipe is not installed, does not support your Python version, or `face_landmarker.task` is missing. Run `pip install -r requirements.txt` and make sure the model file is next to the script. |
+| `pip install mediapipe` fails | Usually an unsupported Python version. Use Python 3.9 or newer (3.12 is tested). |
 | "Could not download the MediaPipe model" | No internet or a proxy blocks the download. Download the file manually (link in [Quick start](#3-check-the-model-files)) and save it as `face_landmarker.task` in the project folder. |
 | `Cannot open camera.` | Another program is using the camera, or the index is wrong. Close other apps and try `CAMERA_INDEX = 1`. Check the operating system's camera privacy settings. |
 | `Error loading age model` | `age_deploy.prototxt` or `age_net.caffemodel` is missing or in a different folder than the script. |
@@ -332,6 +338,7 @@ Older prototypes (`ERP_kiosk_code.py`, `kiosk_code.py.txt`, the notebook) and th
 
 Ideas for future improvements:
 
+- Convert the age model to ONNX so the kiosk can also run on OpenCV 5 and later.
 - Evaluate a more robust or more recent age-estimation model, ideally tested on a larger and more diverse set of faces.
 - Detect face masks explicitly and guide the customer immediately.
 - Fullscreen kiosk mode and a larger, multilingual user interface.
@@ -345,4 +352,6 @@ Ideas for future improvements:
 - **Age model** - the pre-trained Caffe network and its eight age groups follow *G. Levi and T. Hassner, "Age and Gender Classification Using Convolutional Neural Networks", IEEE Workshop on Analysis and Modeling of Faces and Gestures (AMFG) at CVPR 2015* (trained on the Adience benchmark). Check the licence terms of the model files before any commercial use.
 - **[Node-RED](https://nodered.org/)** - receives the orders and connects to the ERP system.
 
+## License
 
+No license has been specified yet. Add a `LICENSE` file before publishing or sharing this repository, and respect the licences of the third-party components listed above.

@@ -632,13 +632,31 @@ class Kiosk:
 # =============================================================================
 # Main
 # =============================================================================
-def run_kiosk():
+def load_age_estimator():
+    """Load the age model, with a precise message if something is wrong."""
+    missing = [p for p in (AGE_PROTO, AGE_MODEL) if not os.path.exists(p)]
+    if missing:
+        raise SystemExit("Age model file(s) not found:\n  " + "\n  ".join(missing) +
+                         "\nPut them in the same folder as this script.")
+    if not hasattr(cv2.dnn, "readNetFromCaffe"):
+        raise SystemExit(
+            f"Your OpenCV ({cv2.__version__}) cannot load Caffe models - OpenCV 5 removed "
+            "Caffe support.\n"
+            "Fix (run in the same Python environment that runs this script):\n"
+            "  pip uninstall -y opencv-python opencv-python-headless "
+            "opencv-contrib-python opencv-contrib-python-headless\n"
+            "  pip install -r requirements.txt\n"
+            f"(cv2 was loaded from: {cv2.__file__})")
     try:
-        age_estimator = AgeEstimator(AGE_PROTO, AGE_MODEL)
-        print("Age model loaded.")
-    except Exception as e:
-        print("Error loading age model:", e)
-        raise SystemExit("Missing age model files.")
+        return AgeEstimator(AGE_PROTO, AGE_MODEL)
+    except Exception as exc:
+        raise SystemExit(f"Could not load the age model: {exc}")
+
+
+def run_kiosk():
+    print("OpenCV", cv2.__version__)
+    age_estimator = load_age_estimator()
+    print("Age model loaded.")
 
     detector = create_detector()
     print("Face/smile detector:", detector.name)

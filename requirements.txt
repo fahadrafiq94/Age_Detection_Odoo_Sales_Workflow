@@ -1,4 +1,4 @@
-opencv-python>=4.8
+opencv-contrib-python>=4.8,<5
 numpy
 requests
 mediapipe>=0.10.9
